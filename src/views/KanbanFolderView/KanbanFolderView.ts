@@ -10,6 +10,7 @@ import { KanbanViewContext } from '../KanbanBase/KanbanViewContext'
 import { parseBoardState } from '../KanbanBase/parseBoardState'
 import { KanbanBoard } from './KanbanBoard'
 import type { IKanbanFolderColumn } from './types'
+import { applyCardOrder, insertCard, parseCardOrder, renameCardPaths, type CardPlacement } from '../KanbanBase/cardOrder'
 
 export type { IKanbanFolderColumn }
 
@@ -143,6 +144,11 @@ export class KanbanFolderView extends BasesView {
 		)
 		this.registerEvent(
 			this.app.vault.on('rename', (file, oldPath) => {
+				const order = parseCardOrder(this.config.get('cardOrder'))
+				const renamed = renameCardPaths(order, oldPath, file.path)
+				if (JSON.stringify(order) !== JSON.stringify(renamed)) {
+					this.config.set('cardOrder', JSON.stringify(renamed))
+				}
 				if (file instanceof TFolder) {
 					const newIsChild = this.isDirectChild(file)
 					const oldParentPath = oldPath.substring(
@@ -193,6 +199,11 @@ export class KanbanFolderView extends BasesView {
 				this.columnRootFolder = resolved
 				rawColumns = deriveColumnsFromRoot(resolved, this.data.data)
 			}
+		}
+
+		const cardOrder = parseCardOrder(this.config.get('cardOrder'))
+		for (const column of rawColumns) {
+			column.entries = applyCardOrder(column.entries, cardOrder)
 		}
 
 		if (!this.cardDragActor) {
@@ -296,7 +307,7 @@ export class KanbanFolderView extends BasesView {
 		this.config.set('columnRoot', folderPath)
 	}
 
-	async dropCard(filePath: string, targetColumnName: string): Promise<void> {
+	async dropCard(filePath: string, targetColumnName: string, placement?: CardPlacement): Promise<void> {
 		const file = this.app.vault.getAbstractFileByPath(filePath)
 		if (!(file instanceof TFile)) return
 		const targetFolder =
@@ -307,7 +318,22 @@ export class KanbanFolderView extends BasesView {
 					c.name === targetColumnName,
 			) ?? null
 		if (!targetFolder) return
-		await this.app.vault.rename(file, targetFolder.path + '/' + file.name)
+		if (placement?.path === filePath) return
+		// Only accept an insertion target belonging to the destination column.
+		if (placement && !this.data.data.some(entry =>
+			entry.file.path === placement.path && entry.file.parent?.path === targetFolder.path,
+		)) return
+		const newPath = targetFolder.path + '/' + file.name
+		if (newPath !== filePath) {
+			// FileManager updates internal links and refuses conflicting filenames.
+			await this.app.fileManager.renameFile(file, newPath)
+		}
+		// Preserve filtered-out cards too. Seed unseen cards from the Base order.
+		const saved = renameCardPaths(parseCardOrder(this.config.get('cardOrder')), filePath, newPath)
+		const order = [...new Set([...saved, ...this.data.data.map(entry => entry.file.path), newPath])]
+			.filter(path => path !== filePath || filePath === newPath)
+		this.config.set('cardOrder', JSON.stringify(insertCard(order, newPath, placement)))
+		this.onDataUpdated()
 	}
 
 	async renameColumn(oldName: string, newName: string): Promise<void> {

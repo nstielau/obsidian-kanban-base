@@ -10,6 +10,8 @@ import { KanbanColumn } from '../KanbanBase/KanbanColumn'
 import { useKanbanView } from '../KanbanBase/KanbanViewContext'
 import type { IKanbanColumn } from '../KanbanBase/types'
 import { FolderSuggestModal } from './FolderSuggestModal'
+import type { CardPlacement } from '../KanbanBase/cardOrder'
+import { Notice } from 'obsidian'
 
 import type { BasesPropertyId } from 'obsidian'
 
@@ -86,14 +88,15 @@ export function KanbanBoard({
 	const cardDragActorRef = useActorRef(cardDragActor)
 	const [cardDragSnapshot, cardDragSend] = useActorState(cardDragActorRef)
 
-	const handleCardDrop = (columnName: string) => {
+	const handleCardDrop = (columnName: string, placement?: CardPlacement) => {
 		const snap = cardDragActorRef.current.getSnapshot()
 		if (
 			snap.value === 'dragging' &&
-			snap.context.dragFile !== null &&
-			snap.context.sourceColumn !== columnName
+			snap.context.dragFile !== null
 		) {
-			void view.dropCard(snap.context.dragFile, columnName)
+			void view.dropCard(snap.context.dragFile, columnName, placement).catch((error: unknown) => {
+				new Notice(`Could not move card: ${error instanceof Error ? error.message : String(error)}`)
+			})
 		}
 		cardDragSend({ type: 'DROP' })
 	}
@@ -171,7 +174,8 @@ export function KanbanBoard({
 							targetColumn: column.name,
 						})
 					}
-					onCardDrop={() => handleCardDrop(column.name)}
+					onCardDrop={placement => handleCardDrop(column.name, placement)}
+					allowCardReorder
 					onCardDragCancel={() => cardDragSend({ type: 'CANCEL' })}
 					isCardDragTarget={
 						cardDragSnapshot.matches('dragging') &&

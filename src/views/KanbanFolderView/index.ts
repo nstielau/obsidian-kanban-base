@@ -8,6 +8,13 @@ export const KANBAN_FACTORY: BasesViewFactory = (controller, containerEl) =>
 
 export const KANBAN_OPTIONS = (): ViewOption[] => [
 	{
+		type: 'text',
+		displayName: 'Card order',
+		key: 'cardOrder',
+		default: '[]',
+		shouldHide: () => true,
+	},
+	{
 		type: 'folder',
 		key: 'columnRoot',
 		displayName: 'Columns root folder',
