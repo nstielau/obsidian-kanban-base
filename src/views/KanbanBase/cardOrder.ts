@@ -29,8 +29,8 @@ export function applyCardOrder<T extends { file: { path: string } }>(
 	const ranks = new Map(order.map((path, index) => [path, index]))
 	return [...entries].sort(
 		(a, b) =>
-			(ranks.get(a.file.path) ?? Infinity) -
-			(ranks.get(b.file.path) ?? Infinity),
+			(ranks.get(a.file.path) ?? order.length) -
+			(ranks.get(b.file.path) ?? order.length),
 	)
 }
 

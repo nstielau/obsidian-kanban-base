@@ -1,16 +1,28 @@
 import type { BasesEntry, BasesPropertyId } from 'obsidian'
-import { BasesView, TFile, TFolder, normalizePath, type QueryController } from 'obsidian'
+import {
+	BasesView,
+	TFile,
+	TFolder,
+	normalizePath,
+	type QueryController,
+} from 'obsidian'
 import { h, render } from 'preact'
 import { createActor, type Actor } from 'xstate'
 import { KANBAN_ID } from '.'
 import { boardMachine, type ColumnRecord } from '../../machines/boardMachine'
 import { cardDragMachine } from '../../machines/cardDragMachine'
 import { AppContext } from '../KanbanBase/AppContext'
+import {
+	applyCardOrder,
+	insertCard,
+	parseCardOrder,
+	renameCardPaths,
+	type CardPlacement,
+} from '../KanbanBase/cardOrder'
 import { KanbanViewContext } from '../KanbanBase/KanbanViewContext'
 import { parseBoardState } from '../KanbanBase/parseBoardState'
 import { KanbanBoard } from './KanbanBoard'
 import type { IKanbanFolderColumn } from './types'
-import { applyCardOrder, insertCard, parseCardOrder, renameCardPaths, type CardPlacement } from '../KanbanBase/cardOrder'
 
 export type { IKanbanFolderColumn }
 
@@ -60,16 +72,17 @@ export function deriveColumns(entries: BasesEntry[]): IKanbanFolderColumn[] {
 	if (mdEntries.length === 0) return []
 
 	// Collect all immediate parent folders
-	const folderMap = new Map<
-		string,
-		IKanbanFolderColumn
-	>()
+	const folderMap = new Map<string, IKanbanFolderColumn>()
 
 	for (const entry of mdEntries) {
 		const folder = entry.file.parent
 		if (!folder || folder.isRoot()) continue
 		if (!folderMap.has(folder.path)) {
-			folderMap.set(folder.path, { name: folder.name, folder, entries: [] })
+			folderMap.set(folder.path, {
+				name: folder.name,
+				folder,
+				entries: [],
+			})
 		}
 		folderMap.get(folder.path)!.entries.push(entry)
 	}
@@ -121,6 +134,7 @@ export class KanbanFolderView extends BasesView {
 	private boardActor: Actor<typeof boardMachine> | null = null
 	private cardDragActor: Actor<typeof cardDragMachine> | null = null
 	private isSyncingFromConfig = false
+	private isUnloaded = false
 
 	constructor(controller: QueryController, containerEl: HTMLElement) {
 		super(controller)
@@ -173,10 +187,13 @@ export class KanbanFolderView extends BasesView {
 	}
 
 	onDataUpdated(): void {
+		if (this.isUnloaded) return
 		const cardProperties: BasesPropertyId[] = this.config.getOrder() ?? []
 		const cardSize = (this.config.get('cardSize') as number | null) ?? 220
-		const addCardTop = (this.config.get('addCardTop') as boolean | null) ?? false
-		const addCardBottom = (this.config.get('addCardBottom') as boolean | null) ?? true
+		const addCardTop =
+			(this.config.get('addCardTop') as boolean | null) ?? false
+		const addCardBottom =
+			(this.config.get('addCardBottom') as boolean | null) ?? true
 
 		// Resolve columnRoot from config
 		const columnRootPath = this.config.get('columnRoot') as
@@ -243,7 +260,10 @@ export class KanbanFolderView extends BasesView {
 			// Subscribe after start so the initial snapshot is not delivered
 			this.boardActor.subscribe(snapshot => {
 				if (this.isSyncingFromConfig) return
-				this.config.set('boardState', JSON.stringify(snapshot.context.columns))
+				this.config.set(
+					'boardState',
+					JSON.stringify(snapshot.context.columns),
+				)
 			})
 		} else {
 			// Subsequent calls: merge file-system state into actor
@@ -257,8 +277,8 @@ export class KanbanFolderView extends BasesView {
 			this.boardActor.getSnapshot().context.displayColumns
 		const firstRecord = displayRecords[0]
 		this.firstColumnFolder = firstRecord
-			? (rawColumns.find(c => c.name === firstRecord.name)
-					?.folder ?? null)
+			? (rawColumns.find(c => c.name === firstRecord.name)?.folder ??
+				null)
 			: null
 
 		render(
@@ -298,6 +318,7 @@ export class KanbanFolderView extends BasesView {
 	}
 
 	onunload(): void {
+		this.isUnloaded = true
 		this.boardActor?.stop()
 		this.cardDragActor?.stop()
 		render(null, this.containerEl)
@@ -307,7 +328,12 @@ export class KanbanFolderView extends BasesView {
 		this.config.set('columnRoot', folderPath)
 	}
 
-	async dropCard(filePath: string, targetColumnName: string, placement?: CardPlacement): Promise<void> {
+	async dropCard(
+		filePath: string,
+		targetColumnName: string,
+		placement?: CardPlacement,
+	): Promise<void> {
+		if (this.isUnloaded) return
 		const file = this.app.vault.getAbstractFileByPath(filePath)
 		if (!(file instanceof TFile)) return
 		const targetFolder =
@@ -320,19 +346,39 @@ export class KanbanFolderView extends BasesView {
 		if (!targetFolder) return
 		if (placement?.path === filePath) return
 		// Only accept an insertion target belonging to the destination column.
-		if (placement && !this.data.data.some(entry =>
-			entry.file.path === placement.path && entry.file.parent?.path === targetFolder.path,
-		)) return
+		if (
+			placement &&
+			!this.data.data.some(
+				entry =>
+					entry.file.path === placement.path &&
+					entry.file.parent?.path === targetFolder.path,
+			)
+		)
+			return
 		const newPath = targetFolder.path + '/' + file.name
 		if (newPath !== filePath) {
 			// FileManager updates internal links and refuses conflicting filenames.
 			await this.app.fileManager.renameFile(file, newPath)
 		}
-		// Preserve filtered-out cards too. Seed unseen cards from the Base order.
-		const saved = renameCardPaths(parseCardOrder(this.config.get('cardOrder')), filePath, newPath)
-		const order = [...new Set([...saved, ...this.data.data.map(entry => entry.file.path), newPath])]
-			.filter(path => path !== filePath || filePath === newPath)
-		this.config.set('cardOrder', JSON.stringify(insertCard(order, newPath, placement)))
+		// The file move can finish after the user closes this view.
+		if (this.isUnloaded) return
+		// Preserve filtered-out cards and seed only the destination column, so
+		// untouched columns continue to follow the Base's sort order.
+		const saved = renameCardPaths(
+			parseCardOrder(this.config.get('cardOrder')),
+			filePath,
+			newPath,
+		)
+		const destinationPaths = this.data.data
+			.filter(entry => entry.file.parent?.path === targetFolder.path)
+			.map(entry => entry.file.path)
+		const order = [
+			...new Set([...saved, ...destinationPaths, newPath]),
+		].filter(path => path !== filePath || filePath === newPath)
+		this.config.set(
+			'cardOrder',
+			JSON.stringify(insertCard(order, newPath, placement)),
+		)
 		this.onDataUpdated()
 	}
 
@@ -424,7 +470,9 @@ export class KanbanFolderView extends BasesView {
 		const rootPath = !this.columnRootFolder.isRoot()
 			? this.columnRootFolder.path
 			: ''
-		const folderPath = normalizePath(rootPath ? `${rootPath}/${trimmed}` : trimmed)
+		const folderPath = normalizePath(
+			rootPath ? `${rootPath}/${trimmed}` : trimmed,
+		)
 
 		await this.app.vault.createFolder(folderPath)
 		// next onDataUpdated MERGE_COLUMNS appends the new record automatically

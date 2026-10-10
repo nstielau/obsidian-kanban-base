@@ -71,8 +71,9 @@ survives reopening and travels with the board when the vault is synced. Note
 contents and filenames are unchanged by same-column reordering. Moves between
 columns use Obsidian's file manager to respect its link-update settings.
 
-Saved manual positions take precedence over the Base's sorting; new cards follow
-the saved cards in the Base's sort order. To reset manual ordering, remove the
+Saved manual positions take precedence over the Base's sorting in reordered
+columns; untouched columns keep the Base's sorting. New cards follow the saved
+cards in the Base's sort order. To reset manual ordering, remove the
 `cardOrder` line from that view's `.base` configuration. Different views maintain
 independent orders. File/folder renames while a board is loaded preserve positions;
 renames made while the board is closed are treated as new paths on reopening.
